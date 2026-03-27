@@ -3,6 +3,7 @@ import json
 from openai import OpenAI
 from vpp.client import VppEnv
 from vpp.models import VppAction
+import requests
 
 # Initialize the OpenAI client
 # Ensure OPENAI_API_KEY is set in your environment variables
@@ -80,6 +81,16 @@ def run_baseline(task_id="easy-arbitrage"):
         # 5. Fetch final score from the grader endpoint
         print(f"--- Episode Complete ---")
         print(f"Cumulative Reward: {total_reward:.2f}")
+
+        try:
+            # Ask the server for the normalized score
+            grader_response = requests.get(f"{server_url}/grader")
+            final_score = grader_response.json().get("score", 0.0)
+            print(f"Normalized Grader Score: {final_score:.2f} / 1.0")
+            return final_score
+        except Exception as e:
+            print(f"Error fetching grader score: {e}")
+            return 0.0
 
 if __name__ == "__main__":
     # Ensure uvicorn server.app:app is running before execution

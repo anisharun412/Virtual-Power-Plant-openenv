@@ -38,6 +38,7 @@ except Exception as e:  # pragma: no cover
 try:
     from ..models import VppAction, VppObservation
     from .vpp_environment import VppEnvironment
+    from ..baseline_inference import run_baseline
 except ModuleNotFoundError:
     from models import VppAction, VppObservation
     from server.vpp_environment import VppEnvironment
@@ -77,16 +78,16 @@ async def get_grader_score():
     return {"score": score}
 
 @app.get("/baseline")
-async def run_baseline():
+async def get_baseline_scores():
     """
     REQUIRED: Triggers the inference script and returns scores for all 3 tasks.
     Note: In production, this usually runs a pre-recorded or live-simulated agent.
     """
     # NOTE : This should return the 'reproducible' scores your agent gets
     return {
-        "easy-arbitrage": 0.95,
-        "medium-forecast-error": 0.72,
-        "hard-frequency-response": 0.88
+        "easy-arbitrage": run_baseline("easy-arbitrage"),
+        "medium-forecast-error": run_baseline("medium-forecast-error"),
+        "hard-frequency-response": run_baseline("hard-frequency-response")
     }
 
 

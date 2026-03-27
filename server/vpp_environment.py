@@ -23,13 +23,18 @@ try:
 except ImportError:
     from models import VppAction, VppObservation, VppState, BatteryAsset, BatteryTelemetry
 
-
+"""
+NOTE : THIS IS A PLACEHOLDER ENGINE
+       TO BE IMPLEMENTED BY MEMBER 2 & 3
+"""
 class VppEnvironment(Environment):
     """
     A simple echo environment that echoes back messages.
 
     This environment is designed for testing the HTTP server infrastructure.
     It maintains minimal state and simply echoes back whatever message it receives.
+
+    NOTE : THIS IS A PLACEHOLDER ENGINE. TO BE IMPLEMENTED BY MEMBER 2 & 3
 
     Example:
         >>> env = VppEnvironment()
@@ -52,6 +57,7 @@ class VppEnvironment(Environment):
         Initialize the VppEnvironment.
         """
         self._reset_count = 0
+        self._last_cumulative_reward = 0.0
 
         self.assets = [
             BatteryAsset(asset_id=f"home-{i:03}", capacity_kwh=13.5, max_power_kw=5.0)
@@ -116,6 +122,11 @@ class VppEnvironment(Environment):
         reward = action.global_charge_rate * price * -1.0 # Negative charge = Selling = Profit
         
         done = self._internal_state.current_step >= 95 # End of 24h cycle
+
+        if done:
+            # Store the final theoretical calculation here. 
+            # NOTE : For now, we are just storing the last reward step as a placeholder.
+            VppEnvironment._last_cumulative_reward += reward
         return self._generate_observation(), reward, done, {}
 
     def _generate_observation(self) -> VppObservation:
@@ -148,3 +159,18 @@ class VppEnvironment(Environment):
             Current State with episode_id and step_count
         """
         return self._internal_state
+
+    @classmethod
+    def get_current_task_score(cls) -> float:
+        """
+        Calculates a normalized score (0.0 to 1.0) based on performance.
+        """
+        # NOTE: This is placeholder logic! 
+        # In a real VPP, you would divide the actual profit by the theoretical max profit.
+        # For now, we return a mock normalized score based on the reward being positive.
+        if cls._last_cumulative_reward <= 0:
+            return 0.0
+        
+        # Arbitrary normalization for testing: cap at 1.0
+        normalized = min(1.0, cls._last_cumulative_reward / 1000.0) 
+        return normalized
