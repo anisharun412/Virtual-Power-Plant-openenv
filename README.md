@@ -1,11 +1,11 @@
 ---
 title: Vpp Environment Server
-emoji: ⏰
+emoji: ⚡
 colorFrom: pink
 colorTo: yellow
 sdk: docker
 pinned: false
-app_port: 8000
+app_port: 7860
 base_path: /web
 tags:
   - openenv
@@ -26,19 +26,18 @@ try:
     # Create environment from Docker image
     vppenv = VppEnv.from_docker_image("vpp-env:latest")
 
-    # Reset
-    result = vppenv.reset()
-    print(f"Reset: {result.observation.echoed_message}")
+    # Reset with a specific task
+    result = vppenv.reset(task_id="easy-arbitrage")
+    print(f"Episode Started: {result.observation.timestamp}")
 
-    # Send multiple messages
-    messages = ["Hello, World!", "Testing echo", "Final message"]
-
-    for msg in messages:
-        result = vppenv.step(VppAction(message=msg))
-        print(f"Sent: '{msg}'")
-        print(f"  → Echoed: '{result.observation.echoed_message}'")
-        print(f"  → Length: {result.observation.message_length}")
-        print(f"  → Reward: {result.reward}")
+    # Run for a few steps
+    for i in range(5):
+        # Decide action (e.g., charge at 50% rate, 20% min reserve)
+        action = VppAction(global_charge_rate=0.5, min_reserve_pct=0.2)
+        result = vppenv.step(action)
+        
+        obs = result.observation
+        print(f"Step {obs.step_id} | Price: {obs.market_price_per_mwh:.2f} | Reward: {result.reward:.2f}")
 
 finally:
     # Always clean up
@@ -50,6 +49,14 @@ That's it! The `VppEnv.from_docker_image()` method handles:
 - Waiting for the server to be ready
 - Connecting to the environment
 - Container cleanup when you call `close()`
+
+## Tasks
+
+The environment provides different tasks with varying difficulty levels based on the `openenv.yaml` spec:
+
+- `easy-arbitrage`: Standard energy trading and arbitrage
+- `medium-forecast-error`: Handling weather mismatch and forecast uncertainty
+- `hard-frequency-response`: Emergency grid support operations
 
 ## Building the Docker Image
 
@@ -119,22 +126,23 @@ The deployed space includes:
 ## Environment Details
 
 ### Action
-**VppAction**: Contains a single field
-- `message` (str) - The message to echo back
+**VppAction**: Controls the charging/discharging behavior
+- `global_charge_rate` (float) - The rate to charge or discharge (-1.0 to 1.0). Positive values buy energy from the grid (charge), negative values sell energy to the grid (discharge).
+- `min_reserve_pct` (float) - Minimum reserve energy percentage (0.0 to 1.0).
 
 ### Observation
-**VppObservation**: Contains the echo response and metadata
-- `echoed_message` (str) - The message echoed back
-- `message_length` (int) - Length of the message
-- `reward` (float) - Reward based on message length (length × 0.1)
-- `done` (bool) - Always False for echo environment
-- `metadata` (dict) - Additional info like step count
+**VppObservation**: Contains the state of the Virtual Power Plant and market
+- `timestamp` (datetime) - Current time in the simulation
+- `step_id` (int) - The current step number within the episode
+- `telemetry` (List[BatteryTelemetry]) - Telemetry data for each battery asset (e.g., `asset_id`, `soc`, `current_house_load_kw`, `current_solar_gen_kw`)
+- `market_price_per_mwh` (float) - Current market price of energy
+- `forecast_24h_price` (List[float]) - Forecasted market prices for the next 24 hours
+- `forecast_24h_solar` (List[float]) - Forecasted solar generation for the next 24 hours
 
 ### Reward
-The reward is calculated as: `message_length × 0.1`
-- "Hi" → reward: 0.2
-- "Hello, World!" → reward: 1.3
-- Empty message → reward: 0.0
+The reward calculates the profit achieved during the step:
+- Reward = Power Sold × Price
+- Negative `global_charge_rate` implies selling power to the grid, resulting in a positive reward proportional to the current market price.
 
 ## Advanced Usage
 
@@ -143,14 +151,14 @@ The reward is calculated as: `message_length × 0.1`
 If you already have a Vpp environment server running, you can connect directly:
 
 ```python
-from vpp import VppEnv
+from vpp import VppEnv, VppAction
 
 # Connect to existing server
 vppenv = VppEnv(base_url="<ENV_HTTP_URL_HERE>")
 
 # Use as normal
-result = vppenv.reset()
-result = vppenv.step(VppAction(message="Hello!"))
+result = vppenv.reset(task_id="easy-arbitrage")
+result = vppenv.step(VppAction(global_charge_rate=-0.5, min_reserve_pct=0.2))
 ```
 
 Note: When connecting to an existing server, `vppenv.close()` will NOT stop the server.
@@ -163,13 +171,14 @@ The client supports context manager usage for automatic connection management:
 from vpp import VppAction, VppEnv
 
 # Connect with context manager (auto-connects and closes)
-with VppEnv(base_url="http://localhost:8000") as env:
-    result = env.reset()
-    print(f"Reset: {result.observation.echoed_message}")
+with VppEnv(base_url="http://localhost:7860") as env:
+    result = env.reset(task_id="medium-forecast-error")
+    print(f"Reset step ID: {result.observation.step_id}")
+    
     # Multiple steps with low latency
-    for msg in ["Hello", "World", "!"]:
-        result = env.step(VppAction(message=msg))
-        print(f"Echoed: {result.observation.echoed_message}")
+    for i in range(3):
+        result = env.step(VppAction(global_charge_rate=0.8, min_reserve_pct=0.2))
+        print(f"Reward: {result.reward:.2f}")
 ```
 
 The client uses WebSocket connections for:
@@ -199,15 +208,29 @@ from vpp import VppAction, VppEnv
 from concurrent.futures import ThreadPoolExecutor
 
 def run_episode(client_id: int):
-    with VppEnv(base_url="http://localhost:8000") as env:
-        result = env.reset()
+    with VppEnv(base_url="http://localhost:7860") as env:
+        result = env.reset(task_id="easy-arbitrage")
         for i in range(10):
-            result = env.step(VppAction(message=f"Client {client_id}, step {i}"))
-        return client_id, result.observation.message_length
+            result = env.step(VppAction(global_charge_rate=0.5, min_reserve_pct=0.2))
+        return client_id, result.reward
 
 # Run 4 episodes concurrently
 with ThreadPoolExecutor(max_workers=4) as executor:
     results = list(executor.map(run_episode, range(4)))
+```
+
+## Baseline Inference
+
+A functional LLM trading baseline is provided in `baseline_inference.py`. You can run it locally:
+
+```bash
+# Terminal 1 - Start the environment server
+uvicorn vpp.server.app:app --reload
+
+# Terminal 2 - Run the baseline and connect to the local server
+export OPENAI_API_KEY="your-api-key"
+export VPP_SERVER_URL="http://localhost:8000"
+python vpp/baseline_inference.py
 ```
 
 ## Development & Testing
@@ -237,7 +260,7 @@ uvicorn server.app:app --reload
 
 ## Project Structure
 
-```
+```text
 vpp/
 ├── .dockerignore         # Docker build exclusions
 ├── __init__.py            # Module exports
@@ -247,6 +270,7 @@ vpp/
 ├── uv.lock                # Locked dependencies (generated)
 ├── client.py              # VppEnv client
 ├── models.py              # Action and Observation models
+├── baseline_inference.py  # LLM baseline execution
 └── server/
     ├── __init__.py        # Server module exports
     ├── vpp_environment.py  # Core environment logic
