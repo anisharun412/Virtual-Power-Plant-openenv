@@ -1,0 +1,14 @@
+spec_version: 1
+name: vpp
+tasks:
+  - id: "easy-arbitrage"
+    description: "Standard trading"
+  - id: "medium-forecast-error"
+    description: "Weather mismatch"
+  - id: "hard-frequency-response"
+    description: "Emergency grid support"
+type: space
+runtime: fastapi
+app: server.app:app
+port: 7860
+
