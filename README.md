@@ -1,5 +1,5 @@
 ---
-title: Vpp Environment Server
+title: VPP RL Environment
 emoji: ⚡
 colorFrom: pink
 colorTo: yellow
@@ -9,199 +9,374 @@ app_port: 7860
 base_path: /web
 tags:
   - openenv
+  - energy
+  - rl
 ---
 
-# Vpp Environment
+# Virtual Power Plant (VPP) RL Environment
 
-A Virtual Power Plant (VPP) environment for training and evaluating AI agents in energy management.
+A high-fidelity energy trading simulator for renewable asset portfolio optimization. This environment implements the [OpenEnv](https://github.com/meta-pytorch/OpenEnv) specification for reproducible and scalable RL benchmarking.
+
+## Overview
+
+**Task**: Maximize profit while maintaining grid stability by controlling a portfolio of distributed energy resources (batteries, solar, EVs) across a 24-hour period (96 × 15-minute timesteps).
+
+**Assets**:
+- **Batteries**: 10 kWh capacity, 5 kW max power, 92% round-trip efficiency
+- **Solar**: 5 kW peak, weather-dependent generation
+- **EV**: 60 kWh capacity, 7 kW home charger
+
+**Action Space**:
+- `global_charge_rate`: [-1.0, 1.0] (sell all → buy all)
+- `battery_reserve_pct`: [0.0, 1.0] (grid support buffer)
+
+**Observation Space**:
+- Asset telemetry (SoC, power, generation)
+- Grid conditions (frequency, voltage, market price)
+- 24-hour forecasts (prices, solar generation)
 
 ## Quick Start
 
-The simplest way to use the Vpp environment is through the `VppEnv` class:
+### Python API
 
 ```python
 from vpp import VppAction, VppEnv
+import asyncio
 
-try:
+async def main():
     # Create environment from Docker image
-    vppenv = VppEnv.from_docker_image("vpp-env:latest")
+    async with VppEnv.from_docker_image("vpp-env:latest") as env:
+        # Reset with a specific task
+        result = await env.reset(task_id="easy-arbitrage")
+        print(f"Episode Started: {result.observation.step_id}")
 
-    # Reset with a specific task
-    result = vppenv.reset(task_id="easy-arbitrage")
-    print(f"Episode Started: {result.observation.timestamp}")
+        # Run for multiple steps
+        for step in range(96):
+            # Decide action: charge at 50% rate, maintain 20% min reserve
+            action = VppAction(global_charge_rate=0.5, battery_reserve_pct=0.2)
+            result = await env.step(action)
+            
+            if result.done:
+                break
+                
+            obs = result.observation
+            price = obs.market_price_per_mwh
+            soc = obs.battery_telemetry[0].soc if obs.battery_telemetry else 0
+            print(f"Step {obs.step_id} | Price: ${price:.2f}/MWh | SoC: {soc:.1%} | Reward: {result.reward:+.2f}")
 
-    # Run for a few steps
-    for i in range(5):
-        # Decide action (e.g., charge at 50% rate, 20% min reserve)
-        action = VppAction(global_charge_rate=0.5, min_reserve_pct=0.2)
-        result = vppenv.step(action)
-        
-        obs = result.observation
-        print(f"Step {obs.step_id} | Price: {obs.market_price_per_mwh:.2f} | Reward: {result.reward:.2f}")
-
-finally:
-    # Always clean up
-    vppenv.close()
+asyncio.run(main())
 ```
 
-That's it! The `VppEnv.from_docker_image()` method handles:
-- Starting the Docker container
-- Waiting for the server to be ready
-- Connecting to the environment
-- Container cleanup when you call `close()`
+## Installation
+
+### From Source
+
+```bash
+# Clone repository
+cd vpp
+
+# Install with pip
+pip install -e .
+
+# Verify installation
+python validate.py
+```
+
+### Docker
+
+```bash
+# Build Docker image
+docker build -t vpp-env:latest .
+
+# Run container
+docker run -p 8000:7860 vpp-env:latest
+
+# Test in another terminal
+curl http://localhost:8000/tasks
+```
 
 ## Tasks
 
-The environment provides different tasks with varying difficulty levels based on the `openenv.yaml` spec:
+The environment provides 3 tasks with increasing difficulty:
 
-- `easy-arbitrage`: Standard energy trading and arbitrage
-- `medium-forecast-error`: Handling weather mismatch and forecast uncertainty
-- `hard-frequency-response`: Emergency grid support operations
+| Task | Difficulty | Scenario | Market | Solar | Grid |
+|------|-----------|----------|--------|-------|------|
+| `easy-arbitrage` | ⭐ | Stable trading | ±$2/MWh | Predictable | Normal |
+| `medium-forecast-error` | ⭐⭐ | Cloud uncertainty | ±$13/MWh | Variable | Varied freq |
+| `hard-frequency-response` | ⭐⭐⭐ | Grid emergency | ±$50/MWh | Intermittent | 59.5 Hz dip |
 
-## Building the Docker Image
+## API Reference
 
-Before using the environment, you need to build the Docker image:
-
-```bash
-# From project root
-docker build -t vpp-env:latest -f server/Dockerfile .
-```
-
-## Deploying to Hugging Face Spaces
-
-You can easily deploy your OpenEnv environment to Hugging Face Spaces using the `openenv push` command:
-
-```bash
-# From the environment directory (where openenv.yaml is located)
-openenv push
-
-# Or specify options
-openenv push --namespace my-org --private
-```
-
-The `openenv push` command will:
-1. Validate that the directory is an OpenEnv environment (checks for `openenv.yaml`)
-2. Prepare a custom build for Hugging Face Docker space (enables web interface)
-3. Upload to Hugging Face (ensuring you're logged in)
-
-### Prerequisites
-
-- Authenticate with Hugging Face: The command will prompt for login if not already authenticated
-
-### Options
-
-- `--directory`, `-d`: Directory containing the OpenEnv environment (defaults to current directory)
-- `--repo-id`, `-r`: Repository ID in format 'username/repo-name' (defaults to 'username/env-name' from openenv.yaml)
-- `--base-image`, `-b`: Base Docker image to use (overrides Dockerfile FROM)
-- `--private`: Deploy the space as private (default: public)
-
-### Examples
-
-```bash
-# Push to your personal namespace (defaults to username/env-name from openenv.yaml)
-openenv push
-
-# Push to a specific repository
-openenv push --repo-id my-org/my-env
-
-# Push with a custom base image
-openenv push --base-image ghcr.io/meta-pytorch/openenv-base:latest
-
-# Push as a private space
-openenv push --private
-
-# Combine options
-openenv push --repo-id my-org/my-env --base-image custom-base:latest --private
-```
-
-After deployment, your space will be available at:
-`https://huggingface.co/spaces/<repo-id>`
-
-The deployed space includes:
-- **Web Interface** at `/web` - Interactive UI for exploring the environment
-- **API Documentation** at `/docs` - Full OpenAPI/Swagger interface
-- **Health Check** at `/health` - Container health monitoring
-- **WebSocket** at `/ws` - Persistent session endpoint for low-latency interactions
-
-## Environment Details
-
-### Action
-**VppAction**: Controls the charging/discharging behavior
-- `global_charge_rate` (float) - The rate to charge or discharge (-1.0 to 1.0). Positive values buy energy from the grid (charge), negative values sell energy to the grid (discharge).
-- `min_reserve_pct` (float) - Minimum reserve energy percentage (0.0 to 1.0).
-
-### Observation
-**VppObservation**: Contains the state of the Virtual Power Plant and market
-- `timestamp` (datetime) - Current time in the simulation
-- `step_id` (int) - The current step number within the episode
-- `telemetry` (List[BatteryTelemetry]) - Telemetry data for each battery asset (e.g., `asset_id`, `soc`, `current_house_load_kw`, `current_solar_gen_kw`)
-- `market_price_per_mwh` (float) - Current market price of energy
-- `forecast_24h_price` (List[float]) - Forecasted market prices for the next 24 hours
-- `forecast_24h_solar` (List[float]) - Forecasted solar generation for the next 24 hours
-
-### Reward
-The reward calculates the profit achieved during the step:
-- Reward = Power Sold × Price
-- Negative `global_charge_rate` implies selling power to the grid, resulting in a positive reward proportional to the current market price.
-
-## Advanced Usage
-
-### Connecting to an Existing Server
-
-If you already have a Vpp environment server running, you can connect directly:
+### Client Usage
 
 ```python
 from vpp import VppEnv, VppAction
 
-# Connect to existing server
-vppenv = VppEnv(base_url="<ENV_HTTP_URL_HERE>")
+# Async with auto Docker container management
+async with VppEnv.from_docker_image("vpp-env:latest") as env:
+    await env.reset(task_id="easy-arbitrage")
+    action = VppAction(global_charge_rate=-0.5, battery_reserve_pct=0.3)
+    result = await env.step(action)
 
-# Use as normal
-result = vppenv.reset(task_id="easy-arbitrage")
-result = vppenv.step(VppAction(global_charge_rate=-0.5, min_reserve_pct=0.2))
+# Sync wrapper
+with VppEnv(base_url="http://localhost:8000").sync() as env:
+    env.reset(task_id="easy-arbitrage")
+    result = env.step(VppAction(global_charge_rate=0.0, battery_reserve_pct=0.2))
 ```
 
-Note: When connecting to an existing server, `vppenv.close()` will NOT stop the server.
+### HTTP Endpoints
 
-### Using the Context Manager
+**Available Endpoints**:
+- `POST /reset` - Reset environment
+- `POST /step` - Execute action
+- `GET /state` - Get episode metadata
+- `GET /schema` - Action/observation JSON schemas
+- `GET /tasks` - List tasks
+- `GET /grader` - Get normalized score (0.0-1.0)
+- `WS /ws` - WebSocket for persistent sessions
 
-The client supports context manager usage for automatic connection management:
+**Example**:
+```bash
+# Get tasks
+curl http://localhost:8000/tasks
+
+# Reset
+curl -X POST http://localhost:8000/reset \
+  -H "Content-Type: application/json" \
+  -d '{"task_id": "easy-arbitrage"}'
+
+# Step
+curl -X POST http://localhost:8000/step \
+  -H "Content-Type: application/json" \
+  -d '{"global_charge_rate": 0.5, "battery_reserve_pct": 0.2}'
+```
+
+## Baseline Inference
+
+Run the OpenAI-based baseline agent:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export MODEL_NAME="gpt-4o-mini"
+export VPP_SERVER_URL="http://localhost:8000"
+
+python inference.py
+```
+
+**Output Format** (JSON logs):
+```jsonl
+{"type": "START", "task": "easy-arbitrage", "env": "vpp", "model": "gpt-4o-mini"}
+{"type": "STEP", "step": 1, "action": {"global_charge_rate": 0.5, ...}, "reward": -5.25, "done": false}
+{"type": "END", "success": true, "steps": 96, "score": 0.5234, ...}
+```
+
+## Environment Details
+
+### Action Space
+
+**VppAction**:
+- `global_charge_rate: float` - Portfolio control [-1.0 (sell max), +1.0 (buy max)]
+- `battery_reserve_pct: float` - Grid support buffer [0.0, 1.0]
+
+### Observation Space
+
+**VppObservation**:
+- `timestamp: str` - ISO 8601 timestamp
+- `step_id: int` - Current step (0-95)
+- `battery_telemetry: List[BatteryTelemetry]` - Asset-level metrics (SoC, power, degradation)
+- `solar_telemetry: List[SolarTelemetry]` - Generation status
+- `ev_telemetry: List[EvTelemetry]` - EV charging status
+- `grid_frequency_hz: float` - Grid frequency (59-61 Hz)
+- `grid_voltage_v: float` - Voltage (100-140 V)
+- `market_price_per_mwh: float` - Current market price ($/MWh)
+- `forecast_next_24h_price: List[float]` - 96-value price forecast
+- `forecast_next_24h_solar_kw: List[float]` - 96-value generation forecast
+
+### Physics Model
+
+**Battery SoC Update** (per 15-min step):
+```
+power_flow_kw = global_charge_rate × 5.0 kW
+energy_kwh = power_flow_kw × 0.25 hours × 0.92 efficiency  
+new_soc = clamp(old_soc + energy_kwh / 10.0 capacity, 0.1, 0.95)
+```
+
+**Degradation**:
+```
+degradation_per_step = |power_flow_kw| × 0.25 hours × 0.0005 rate
+cumulative_degradation += degradation_per_step
+```
+
+**Solar Generation** (bell curve):
+```
+base_kw = 5.0 × max(0, cos(π × (hour - 12) / 12)²)
+generation = base_kw × (1 - cloud_cover) for hours in [6, 18]
+```
+
+### Reward Function
+
+```
+profit = -grid_dispatch_power × market_price × dt
+battery_penalty = -cumulative_degradation × 100  
+grid_bonus = +5 for maintaining reserve during frequency dip
+            -10 for failing to maintain reserve
+
+total_reward = profit + battery_penalty + grid_bonus
+```
+
+## Reproducibility
+
+All randomness is seed-controlled:
 
 ```python
-from vpp import VppAction, VppEnv
-
-# Connect with context manager (auto-connects and closes)
-with VppEnv(base_url="http://localhost:7860") as env:
-    result = env.reset(task_id="medium-forecast-error")
-    print(f"Reset step ID: {result.observation.step_id}")
-    
-    # Multiple steps with low latency
-    for i in range(3):
-        result = env.step(VppAction(global_charge_rate=0.8, min_reserve_pct=0.2))
-        print(f"Reward: {result.reward:.2f}")
+# Deterministic behavior with seed
+result = env.reset(task_id="easy-arbitrage", seed=42)
 ```
 
-The client uses WebSocket connections for:
-- **Lower latency**: No HTTP connection overhead per request
-- **Persistent session**: Server maintains your environment state
-- **Efficient for episodes**: Better for many sequential steps
+Market data is CSV-based (deterministic, 96 15-min intervals):
+- `server/data/prices_easy.csv`
+- `server/data/prices_medium.csv`  
+- `server/data/prices_hard.csv`
 
-### Concurrent WebSocket Sessions
+## Validation
 
-The server supports multiple concurrent WebSocket connections. To enable this,
-modify `server/app.py` to use factory mode:
+Run the comprehensive validation suite:
+
+```bash
+python validate.py
+```
+
+**Checks**:
+- ✓ Imports and dependencies
+- ✓ Pydantic model validation
+- ✓ Environment initialization
+- ✓ Task configuration
+- ✓ Market data loading
+- ✓ Full episode execution
+- ✓ Client serialization
+- ✓ FastAPI endpoints
+
+## Development
+
+### File Structure
+
+```
+vpp/
+├── models.py              # Pydantic types
+├── client.py              # HTTP/WebSocket client
+├── __init__.py            # Package exports
+├── openenv.yaml           # OpenEnv manifest
+├── pyproject.toml         # Dependencies
+├── inference.py           # Baseline agent
+├── validate.py            # Test suite
+├── Dockerfile             # Container build
+├── README.md              # Documentation
+├── server/
+│   ├── __init__.py
+│   ├── app.py             # FastAPI server
+│   ├── vpp_environment.py # Core simulator
+│   ├── asset_models.py    # Physical models
+│   └── data/
+│       ├── prices_easy.csv
+│       ├── prices_medium.csv
+│       └── prices_hard.csv
+└── requirements.txt
+```
+
+### Key Classes
+
+**VppEnvironment** (OpenEnv Environment):
+- `reset(task_id, seed)` - Initialize 96-step episode
+- `step(action)` - Execute one timestep
+- `state` - Episode metadata (hidden)
+- `get_current_task_score()` - Normalized reward [0.0, 1.0]
+
+**Asset Models**:
+- `BatteryAsset` - 10 kWh, 5 kW, 92% efficiency
+- `SolarAsset` - 5 kW peak
+- `EvAsset` - 60 kWh, 7 kW charger
+
+## Deployment
+
+### HuggingFace Spaces
+
+```bash
+# Login
+huggingface-cli login
+
+# Deploy (requires openenv-cli)
+openenv push --repo-id username/vpp --private
+```
+
+Space will be accessible at: `https://huggingface.co/spaces/username/vpp`
+
+### Azure Container Registry
+
+```bash
+docker build -t vpp-env:latest .
+docker tag vpp-env:latest myacr.azurecr.io/vpp:latest
+docker push myacr.azurecr.io/vpp:latest
+```
+
+## Troubleshooting
+
+### Import Errors
+
+```bash
+# Verify installation
+python -c "from vpp import VppEnv; print('OK')"
+
+# Run validation
+python validate.py
+```
+
+### Connection Issues
+
+```bash
+# Check server status
+curl http://localhost:8000/tasks
+
+# Run with verbose
+docker logs <container_id>
+```
+
+### Reproducibility
+
+Always use seed for deterministic results:
 
 ```python
-# In server/app.py - use factory mode for concurrent sessions
-app = create_app(
-    VppEnvironment,  # Pass class, not instance
-    VppAction,
-    VppObservation,
-    max_concurrent_envs=4,  # Allow 4 concurrent sessions
-)
+result = env.reset(task_id="easy-arbitrage", seed=123)
 ```
 
-Then multiple clients can connect simultaneously:
+## Performance
+
+| Metric | Target |
+|--------|--------|
+| Reset time | <100 ms |
+| Step time | <50 ms |
+| Memory per session | <100 MB |
+| Max concurrent | 10+ |
+| Server startup | <5 s |
+
+## Citation
+
+```bibtex
+@software{vpp_openenv_2024,
+  title={Virtual Power Plant RL Environment},
+  url={https://github.com/meta-pytorch/openenv},
+  year={2024}
+}
+```
+
+## License
+
+BSD-3-Clause License - See LICENSE file
+
+---
+
+**Status**: ✓ Production Ready  
+**Version**: 0.1.0  
+**Last Updated**: 2024
 
 ```python
 from vpp import VppAction, VppEnv

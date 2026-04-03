@@ -1,16 +1,24 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
+"""Virtual Power Plant (VPP) RL Environment.
 
-"""Vpp Environment."""
+A high-fidelity energy trading simulator for renewable asset portfolio optimization.
+"""
 
 from .client import VppEnv
-from .models import VppAction, VppObservation
+from .models import (
+    VppAction,
+    VppObservation,
+    VppState,
+    BatteryTelemetry,
+    SolarTelemetry,
+    EvTelemetry,
+)
 
 __all__ = [
     "VppAction",
     "VppObservation",
+    "VppState",
+    "BatteryTelemetry",
+    "SolarTelemetry",
+    "EvTelemetry",
     "VppEnv",
 ]

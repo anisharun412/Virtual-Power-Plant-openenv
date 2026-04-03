@@ -1,3 +1,61 @@
+# # Multi-stage Dockerfile for VPP Environment
+# # Builds a container compatible with OpenEnv and HuggingFace Spaces
+
+# # Stage 1: Builder
+# FROM python:3.11-slim as builder
+
+# WORKDIR /build
+
+# # Install system dependencies
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     build-essential \
+#     git \
+#     && rm -rf /var/lib/apt/lists/*
+
+# # Copy project files
+# COPY pyproject.toml .
+# COPY . .
+
+# # Create virtual environment
+# RUN python -m venv /opt/venv
+# ENV PATH="/opt/venv/bin:$PATH"
+
+# # Install dependencies
+# RUN pip install --upgrade pip setuptools wheel && \
+#     pip install -e .
+
+# # Stage 2: Runtime
+# FROM python:3.11-slim
+
+# WORKDIR /app
+
+# # Install runtime dependencies only
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     curl \
+#     && rm -rf /var/lib/apt/lists/*
+
+# # Copy virtual environment from builder
+# COPY --from=builder /opt/venv /opt/venv
+
+# # Set environment variables
+# ENV PATH="/opt/venv/bin:$PATH" \
+#     PYTHONUNBUFFERED=1 \
+#     PYTHONDONTWRITEBYTECODE=1
+
+# # Copy application code
+# COPY . .
+
+# # Expose port (OpenEnv default is 7860 for Spaces)
+# EXPOSE 7860
+
+# # Health check
+# HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+#     CMD curl -f http://localhost:7860/tasks || exit 1
+
+# # Start the server
+# # The app is configured to run on 0.0.0.0:7860 per openenv.yaml
+# CMD ["python", "-m", "server.app"]
+
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
@@ -38,14 +96,16 @@ RUN if ! command -v uv >/dev/null 2>&1; then \
         mv /root/.local/bin/uvx /usr/local/bin/uvx; \
     fi
     
+RUN uv venv
+
 # Install dependencies using uv sync
 # If uv.lock exists, use it; otherwise resolve on the fly
-RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ -f uv.lock ]; then \
-        uv sync --frozen --no-install-project --no-editable; \
-    else \
-        uv sync --no-install-project --no-editable; \
-    fi
+# RUN --mount=type=cache,target=/root/.cache/uv \
+#     if [ -f uv.lock ]; then \
+#         uv sync --frozen --no-install-project --no-editable; \
+#     else \
+#         uv sync --no-install-project --no-editable; \
+#     fi
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -f uv.lock ]; then \

@@ -1,83 +1,125 @@
- # Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
 """
-Data models for the Vpp Environment.
-
-The vpp environment is a simple test environment that echoes back messages.
+OpenEnv Pydantic models for Virtual Power Plant environment.
+Defines typed Action, Observation, and State classes.
 """
 
-from openenv.core.env_server.types import Action, Observation, State
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Dict, Optional
 from datetime import datetime
 
-# STATIC DATA (The Registry)
-# Sent ONCE to the Agent at the start of the simulation.
-class BatteryAsset(BaseModel):
-    asset_id: str = Field(..., description="Unique ID for the home battery (e.g., 'home-001')")
-    capacity_kwh: float = Field(..., description="Max energy storage capacity in kWh (e.g., 13.5)")
-    max_power_kw: float = Field(..., description="Max charge/discharge speed in kW (e.g., 5.0)")
-    efficiency_rt: float = Field(0.90, description="Round-trip efficiency. 0.90 means 10% energy is lost as heat.")
+from openenv.core.env_server.types import Action, Observation, State
 
-# DYNAMIC DATA (The Telemetry)
-# Lightweight data that changes every single step.
+
+# ============================================================================
+# NESTED TELEMETRY MODELS
+# ============================================================================
+
 class BatteryTelemetry(BaseModel):
-    asset_id: str = Field(..., description="Must match an ID from the BatteryAsset registry")
-    soc: float = Field(..., ge=0.0, le=1.0, description="Current State of Charge (0.0 to 1.0)")
-    current_house_load_kw: float = Field(..., description="Real-time power drawn by the home's appliances")
-    current_solar_gen_kw: float = Field(..., description="Real-time power produced by the home's solar panels")
+    """Current state of a battery asset."""
+    asset_id: str
+    soc: float = Field(..., ge=0.0, le=1.0, description="State of Charge (0.0-1.0)")
+    power_kw: float = Field(..., ge=-5.0, le=5.0, description="Current power (negative=charging)")
+    degradation_cumulative: float = Field(..., ge=0.0, description="Cumulative degradation")
 
-# ACTION (The Dispatch Command)
-# Sent by the Agent back to the Environment.
+
+class SolarTelemetry(BaseModel):
+    """Current state of a solar asset."""
+    asset_id: str
+    generation_kw: float = Field(..., ge=0.0, le=5.0, description="Current generation (kW)")
+
+
+class EvTelemetry(BaseModel):
+    """Current state of an EV asset."""
+    asset_id: str
+    soc: float = Field(..., ge=0.0, le=1.0, description="Battery state of charge (0.0-1.0)")
+    charger_available: bool = Field(True, description="Can accept charge")
+    power_demand_kw: float = Field(..., ge=0.0, le=7.0, description="Current demand (kW)")
+
+
+# ============================================================================
+# ACTION
+# ============================================================================
+
 class VppAction(Action):
-    # -1.0 means "Sell max power to grid", +1.0 means "Buy max power from grid"
-    global_charge_rate: float = Field(..., ge=-1.0, le=1.0, description="Command sent to all batteries.")
+    """Agent control signal sent each timestep.
     
-    # The "Social Contract" constraint
-    min_reserve_pct: float = Field(0.2, ge=0.0, le=1.0, description="Safety buffer. Do not discharge if SoC hits this level.")
+    Defines how the agent wants to manage the portfolio:
+    - global_charge_rate: Proportion to charge (positive) or discharge (negative)
+    - battery_reserve_pct: Minimum SoC to maintain for grid support
+    """
+    global_charge_rate: float = Field(
+        ...,
+        ge=-1.0,
+        le=1.0,
+        description="Portfolio charge rate: -1.0 (sell all) to +1.0 (buy all)"
+    )
+    battery_reserve_pct: float = Field(
+        0.2,
+        ge=0.0,
+        le=1.0,
+        description="Safety buffer: minimum SoC not to breach during grid support"
+    )
 
-# OBSERVATION (The World State)
-# Sent to the Agent every 15 minutes (96 times a day).
+
+# ============================================================================
+# OBSERVATION
+# ============================================================================
+
 class VppObservation(Observation):
-    timestamp: datetime
-    step_id: int = Field(..., description="Current 15-min interval index (0 to 95)")
+    """State visible to agent each timestep.
     
-    # The physical state of all 100 homes
-    telemetry: List[BatteryTelemetry] 
+    Includes:
+    - Asset telemetry (battery, solar, EV status)
+    - Grid conditions (frequency, voltage, price)
+    - Forecasts (next 24h prices and solar generation)
+    """
+    timestamp: str = Field(..., description="ISO 8601 timestamp")
+    step_id: int = Field(..., ge=0, le=95, description="Step within episode (0-95)")
     
-    # The Grid Vitals (Triggers for the "Hard" Tasks)
-    grid_frequency_hz: float = Field(50.0, description="Target: 50.0. Drop below 49.8 is an emergency.")
-    grid_voltage_v: float = Field(230.0, description="Target: 230.0. Spike above 250V requires charging to absorb power.")
-    market_price_per_mwh: float = Field(..., description="Current wholesale energy price in USD.")
+    # Asset telemetry
+    battery_telemetry: List[BatteryTelemetry] = Field(..., description="Battery status")
+    solar_telemetry: List[SolarTelemetry] = Field(..., description="Solar generation")
+    ev_telemetry: List[EvTelemetry] = Field(..., description="EV status")
     
-    # The Forecasts (For Agent Reasoning)
-    forecast_24h_price: List[float] = Field(..., description="Predicted prices for the next 96 steps.")
-    forecast_24h_solar: List[float] = Field(..., description="Predicted solar intensity for the next 96 steps.")
+    # Grid conditions
+    grid_frequency_hz: float = Field(..., ge=59.0, le=61.0, description="Grid frequency (Hz)")
+    grid_voltage_v: float = Field(120.0, ge=100.0, le=140.0, description="Voltage (V)")
+    market_price_per_mwh: float = Field(..., ge=0.0, description="Current market price ($/MWh)")
+    
+    # Forecasts
+    forecast_next_24h_price: List[float] = Field(
+        default_factory=list,
+        description="Forecasted prices for next 24h (96 × 15-min intervals)"
+    )
+    forecast_next_24h_solar_kw: List[float] = Field(
+        default_factory=list,
+        description="Forecasted solar generation (96 values)"
+    )
+    # Reward and episode termination info (populated by the environment)
+    reward: float = Field(0.0, description="Immediate reward for last action")
+    done: bool = Field(False, description="Episode termination flag")
+    cumulative_reward: float = Field(0.0, description="Cumulative reward so far")
 
-# STATE (The Ground Truth)
-# Hidden from the Agent. Used by the Engine to calculate scores.
+
+# ============================================================================
+# STATE (for grading and episode management)
+# ============================================================================
+
 class VppState(State):
-    """The omniscient ground truth of the VPP Environment."""
+    """God-view state used for grading and episode tracking.
     
-    # --- 1. Temporal Trackers ---
-    current_step: int = Field(..., description="The current 15-minute interval index (e.g., 42).")
-    task_tier: str = Field(..., description="The active scenario: 'easy', 'medium', or 'hard'.")
+    Hidden from agent; used for task scoring and debugging.
+    """
+    episode_id: str = Field(..., description="Unique episode identifier")
+    step_count: int = Field(0, ge=0, description="Current step within episode")
     
-    # --- 2. Financial Accumulators (For the Grader) ---
-    cumulative_revenue_usd: float = Field(0.0, description="Total money earned from selling to the grid.")
-    cumulative_cost_usd: float = Field(0.0, description="Total money spent buying from the grid.")
-    cumulative_profit_usd: float = Field(0.0, description="Revenue minus Cost.")
+    # Task configuration
+    task_tier: str = Field(..., description="Task difficulty: 'easy', 'medium', or 'hard'")
     
-    # --- 3. Safety & Performance Trackers (For Penalties) ---
-    blackout_events_count: int = Field(0, description="Times the battery hit 0% while the home needed power.")
-    safety_violations_count: int = Field(0, description="Times the agent drained the battery below min_reserve_pct.")
-    grid_emergencies_ignored: int = Field(0, description="Times the grid frequency dropped but the agent did not discharge.")
+    # Cumulative metrics
+    cumulative_revenue_usd: float = Field(0.0, description="Total revenue ($)")
+    cumulative_battery_degradation: float = Field(0.0, ge=0.0, description="Degradation amount")
     
-    # --- 4. Physical Ground Truth (Hidden from Agent) ---
-    actual_weather_mode: str = Field(..., description="e.g., 'clear_sky', 'rolling_clouds', 'storm'. Determines actual solar yield.")
-    # We use a dictionary here for ultra-fast lookups in the Engine
-    battery_true_soc: Dict[str, float] = Field(..., description="Dictionary mapping asset_id to its precise true SoC.")
+    # Gate events
+    grid_events_handled: int = Field(0, ge=0, description="Count of frequency emergencies responded to")
+    battery_violation_count: int = Field(0, ge=0, description="Over-discharge violations")

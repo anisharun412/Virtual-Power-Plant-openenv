@@ -4,69 +4,88 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Vpp Environment Client."""
+"""VPP Environment Client Implementation."""
 
 from typing import Dict
-
-from openenv.core import EnvClient
+from openenv.core.env_client import EnvClient
 from openenv.core.client_types import StepResult
-from openenv.core.env_server.types import State
 
-from .models import VppAction, VppObservation, BatteryTelemetry
+try:
+    from .models import (
+        VppAction,
+        VppObservation,
+        VppState,
+        BatteryTelemetry,
+        SolarTelemetry,
+        EvTelemetry,
+    )
+except ImportError:
+    from models import (
+        VppAction,
+        VppObservation,
+        VppState,
+        BatteryTelemetry,
+        SolarTelemetry,
+        EvTelemetry,
+    )
 
 
-class VppEnv(
-    EnvClient[VppAction, VppObservation, State]
-):
-    """
-    Client for the Vpp Environment.
+class VppEnv(EnvClient[VppAction, VppObservation, VppState]):
+    """Client for VPP Environment.
+    
+    Connects to the VPP server via HTTP/WebSocket and handles
+    serialization/deserialization of typed action/observation models.
+    
+    Example (Sync):
+        >>> with VppEnv(base_url="http://localhost:8000").sync() as env:
+        ...     result = env.reset(task_id="easy-arbitrage")
+        ...     for step in range(96):
+        ...         action = VppAction(global_charge_rate=0.5, battery_reserve_pct=0.2)
+        ...         result = env.step(action)
+        ...         if result.done:
+        ...             break
 
-    This client maintains a persistent WebSocket connection to the environment server,
-    enabling efficient multi-step interactions with lower latency.
-    Each client instance has its own dedicated environment session on the server.
-
-    Example:
-        >>> # Connect to a running server
-        >>> with VppEnv(base_url="http://localhost:8000") as client:
-        ...     result = client.reset()
-        ...     print(result.observation.echoed_message)
-        ...
-        ...     result = client.step(VppAction(message="Hello!"))
-        ...     print(result.observation.echoed_message)
-
-    Example with Docker:
-        >>> # Automatically start container and connect
-        >>> client = VppEnv.from_docker_image("vpp-env:latest")
-        >>> try:
-        ...     result = client.reset()
-        ...     result = client.step(VppAction(message="Test"))
-        ... finally:
-        ...     client.close()
+    Example (Async):
+        >>> async with VppEnv(base_url="http://localhost:8000") as env:
+        ...     result = await env.reset(task_id="easy-arbitrage")
+        ...     result = await env.step(action)
     """
 
     def _step_payload(self, action: VppAction) -> Dict:
-        # Send the VPP-specific action fields
-
+        """Convert typed action to JSON payload."""
         return {
             "global_charge_rate": action.global_charge_rate,
-            "min_reserve_pct": action.min_reserve_pct
+            "battery_reserve_pct": action.battery_reserve_pct,
         }
 
     def _parse_result(self, payload: Dict) -> StepResult[VppObservation]:
+        """Parse server JSON response to typed Observation."""
         obs_data = payload.get("observation", {})
-        
-        # Reconstruct the telemetry list from JSON
-        telemetry = [BatteryTelemetry(**t) for t in obs_data.get("telemetry", [])]
-        
+
+        # Reconstruct nested telemetry models
+        battery_telem = [
+            BatteryTelemetry(**t) for t in obs_data.get("battery_telemetry", [])
+        ]
+        solar_telem = [
+            SolarTelemetry(**t) for t in obs_data.get("solar_telemetry", [])
+        ]
+        ev_telem = [EvTelemetry(**t) for t in obs_data.get("ev_telemetry", [])]
+
         observation = VppObservation(
-            timestamp=obs_data.get("timestamp"),
+            timestamp=obs_data.get("timestamp", ""),
             step_id=obs_data.get("step_id", 0),
-            telemetry=telemetry,
-            grid_frequency_hz=obs_data.get("grid_frequency_hz", 50.0),
-            grid_voltage_v=obs_data.get("grid_voltage_v", 230.0),
+            battery_telemetry=battery_telem,
+            solar_telemetry=solar_telem,
+            ev_telemetry=ev_telem,
+            grid_frequency_hz=obs_data.get("grid_frequency_hz", 60.0),
+            grid_voltage_v=obs_data.get("grid_voltage_v", 120.0),
             market_price_per_mwh=obs_data.get("market_price_per_mwh", 0.0),
-            forecast_24h_price=obs_data.get("forecast_24h_price", []),
-            forecast_24h_solar=obs_data.get("forecast_24h_solar", [])
+            forecast_next_24h_price=obs_data.get("forecast_next_24h_price", []),
+            forecast_next_24h_solar_kw=obs_data.get("forecast_next_24h_solar_kw", []),
+            # Reward and termination info (from step payload or embedded observation)
+            reward=payload.get("reward", obs_data.get("reward", 0.0)),
+            done=payload.get("done", obs_data.get("done", False)),
+            cumulative_reward=payload.get("info", {}).get("cumulative_reward", obs_data.get("cumulative_reward", 0.0)),
         )
 
         return StepResult(
@@ -75,17 +94,16 @@ class VppEnv(
             done=payload.get("done", False),
         )
 
-    def _parse_state(self, payload: Dict) -> State:
-        """
-        Parse server response into State object.
-
-        Args:
-            payload: JSON response from state request
-
-        Returns:
-            State object with episode_id and step_count
-        """
-        return State(
-            episode_id=payload.get("episode_id"),
+    def _parse_state(self, payload: Dict) -> VppState:
+        """Parse server JSON response to typed State."""
+        return VppState(
+            episode_id=payload.get("episode_id", ""),
             step_count=payload.get("step_count", 0),
+            task_tier=payload.get("task_tier", "easy-arbitrage"),
+            cumulative_revenue_usd=payload.get("cumulative_revenue_usd", 0.0),
+            cumulative_battery_degradation=payload.get(
+                "cumulative_battery_degradation", 0.0
+            ),
+            grid_events_handled=payload.get("grid_events_handled", 0),
+            battery_violation_count=payload.get("battery_violation_count", 0),
         )
